@@ -5,15 +5,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
-from matplotlib.widgets import Slider
-from scipy.spatial.distance import cdist
+from matplotlib.widgets import Slider, Button
 from scipy.spatial.transform import Rotation
+from SoftPOSIT import softposit
 
 matplotlib.use('TkAgg')
 
 
 class Fitter3DManual:
-    def __init__(self, model_pcd, image_pcd):  # TODO: Change all attributes to internal
+    def __init__(self, model_pcd, image_pcd):
         # Point clouds extracted from processing the image and the STL mesh of the object.
         self.model_points = np.asarray(model_pcd.points)
         self.image_points = np.asarray(image_pcd.points)[:, 0:2]
@@ -28,7 +28,9 @@ class Fitter3DManual:
         self.distortion = np.array([0, 0, 0, 0, 0], dtype=np.float32)
 
         # Initial Transform and pose of the model relative to the image axis.
-        self._rvec_init = np.array([0, 0, 0], dtype=np.float32)
+        self._roll_init, self._pitch_init, self._yaw_init = np.random.uniform(low=-np.pi, high=np.pi, size=(3,))
+        self._rmat_init = Rotation.from_euler('zyx', [self._yaw_init, self._pitch_init, self._roll_init]).as_matrix()
+        self._rvec_init = cv2.Rodrigues(self._rmat_init)[0].squeeze()
         self._tvec_init = np.array([0, 0, 100], dtype=np.float32)
 
         # Slider maximum and minimum values:
@@ -43,7 +45,7 @@ class Fitter3DManual:
         self._focal_length_min = 10 ** -20
         self._focal_length_max = 2500
 
-        self.rmat = None
+        self.rmat = self._rmat_init
         self.rvec = self._rvec_init
         self.tvec = self._tvec_init
 
@@ -58,6 +60,7 @@ class Fitter3DManual:
         self._figwidth = 10
         self.fig = plt.figure(figsize=(self._figheight, self._figwidth))
         self.slider_axes = [plt.axes([0.1, 0.03 * (i + 1), 0.8, 0.03]) for i in range(9)]
+        # self.button_axis = plt.axes([0.94, 0.01, 0.05, 0.05])
         self.viewgraph = plt.axes([0.1, 0.3, 0.8, 0.7])
         self.viewgraph.set_ylim((0, 1200))
         self.viewgraph.set_xlim((150, 1200))
@@ -76,10 +79,10 @@ class Fitter3DManual:
         self.slider_focal_length = Slider(self.slider_axes[2], 'Focal Length', self._focal_length_min,
                                           self._focal_length_max, valinit=self._cam_mat_init[0, 0], valstep=0.1)
         self.slider_rot_x = Slider(self.slider_axes[3], 'Roll', self._rot_min, self._rot_max,
-                                   valinit=self._rvec_init[0], valstep=0.1)
+                                   valinit=self._roll_init, valstep=0.1)
         self.slider_rot_y = Slider(self.slider_axes[4], 'Pitch', self._rot_min, self._rot_max,
-                                   valinit=self._rvec_init[1], valstep=0.1)
-        self.slider_rot_z = Slider(self.slider_axes[5], 'Yaw', self._rot_min, self._rot_max, valinit=self._rvec_init[2],
+                                   valinit=self._pitch_init, valstep=0.1)
+        self.slider_rot_z = Slider(self.slider_axes[5], 'Yaw', self._rot_min, self._rot_max, valinit=self._yaw_init,
                                    valstep=0.1)
         self.slider_trans_x = Slider(self.slider_axes[6], 'X', self._trans_min, self._trans_max,
                                      valinit=self._tvec_init[0], valstep=0.1)
@@ -87,38 +90,24 @@ class Fitter3DManual:
                                      valinit=self._tvec_init[1], valstep=0.1)
         self.slider_trans_z = Slider(self.slider_axes[8], 'Z', self._trans_min, self._trans_max,
                                      valinit=self._tvec_init[2], valstep=0.1)
+        # self.button_softposit = Button(self.button_axis, 'SoftPOSIT!')
 
-    def softposit(self):  # TODO: Take the algorithm out of the class.
-        # Initialize.
-        alpha = 0.0001
-        beta_init = 0.0004
-        beta_final = 0.1
-        beta_n_iters = 10
-        image_points_centroid = np.mean(self.image_points, axis=0)
-        transpose1 = np.random.rand(1, 4)
-        transpose2 = np.random.rand(1, 4)
-        model_points_homogenous = np.concatenate((self.model_points, np.ones((np.size(self.model_points, 0), 1))),
-                                                 axis=1)
-        w = np.ones(np.size(self.image_points, 0))
-        for beta in np.linspace(beta_init, beta_final, beta_n_iters):
-            points_dist = cdist(self.image_points, self.pcd_transformed_2d)
-            correspondence = np.exp(-beta * (points_dist - alpha))
-            objective_func = np.sum(np.square(transpose1 * model_points_homogenous - w * self.image_points[:, 0]),
-                                    np.square(transpose2 * model_points_homogenous - w * self.image_points[:, 1]))
+
 
     def run(self):
-        self.slider_center_x.on_changed(self.update)
-        self.slider_center_y.on_changed(self.update)
-        self.slider_focal_length.on_changed(self.update)
-        self.slider_rot_x.on_changed(self.update)
-        self.slider_rot_y.on_changed(self.update)
-        self.slider_rot_z.on_changed(self.update)
-        self.slider_trans_x.on_changed(self.update)
-        self.slider_trans_y.on_changed(self.update)
-        self.slider_trans_z.on_changed(self.update)
+        self.slider_center_x.on_changed(self.update_manual)
+        self.slider_center_y.on_changed(self.update_manual)
+        self.slider_focal_length.on_changed(self.update_manual)
+        self.slider_rot_x.on_changed(self.update_manual)
+        self.slider_rot_y.on_changed(self.update_manual)
+        self.slider_rot_z.on_changed(self.update_manual)
+        self.slider_trans_x.on_changed(self.update_manual)
+        self.slider_trans_y.on_changed(self.update_manual)
+        self.slider_trans_z.on_changed(self.update_manual)
+        # self.button_softposit.on_clicked(self.softposit())
         plt.show()
 
-    def update(self, *args):
+    def update_manual(self, *args):
         self.viewgraph.clear()
         self.rmat = Rotation.from_euler('zyx', [self.slider_rot_z.val, self.slider_rot_y.val,
                                                 self.slider_rot_x.val]).as_matrix()
@@ -142,5 +131,5 @@ class Fitter3DManual:
 model_pcd = o3d.io.read_point_cloud("chair_points.pcd")
 image_pcd = o3d.io.read_point_cloud("chair_flat_points.pcd")
 fitter = Fitter3DManual(model_pcd=model_pcd, image_pcd=image_pcd)
-# fitter.run()
-fitter.softposit()
+fitter.run()
+
